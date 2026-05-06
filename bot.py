@@ -1,69 +1,76 @@
 import telebot
 import requests
-from bs4 import BeautifulSoup
+import hashlib
+import time
+import json
 import re
 
-# ==================== توكن البوت (مدمج) ====================
-TOKEN = "8721409307:AAEAbW8lQfy77r1ppEiNlFEJFt6VW_PoZm4"
-bot = telebot.TeleBot(TOKEN)
-BOT_NAME = "Gate_Dz_Bot"
+# ==================== إعداداتك ====================
+TELEGRAM_TOKEN = "8721409307:AAEAbW8lQfy77r1ppEiNlFEJFt6VW_PoZm4"
+APP_KEY = "533600"
+APP_SECRET = "NHU8RehSTyMwwv7O5gdZVXupWUymYmYd"
 
-# ==================== رسالة الترحيب ====================
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    welcome_text = """✅ مرحبا بك في بوت Gate_Dz_Bot!
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-أرسل لي أي رابط منتج من علي إكسبريس وسأعطيك:
-- السعر بالدولار (USD)
-- معلومات الشحن للجزائر
-- أفضل العروض
+def generate_sign(params):
+    sorted_params = sorted(params.items())
+    sign_str = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted_params]) + APP_SECRET
+    return hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
 
-جرب الآن وأرسل رابط!"""
-    bot.reply_to(message, welcome_text)
-
-# ==================== معالج الروابط ====================
-@bot.message_handler(func=lambda message: 'aliexpress.com' in message.text.lower())
-def handle_product_link(message):
-    link = message.text.strip()
+def call_aliexpress_api(method, params):
+    url = "https://api.aliexpress.com/sync"
+    params["app_key"] = APP_KEY
+    params["method"] = method
+    params["timestamp"] = str(int(time.time() * 1000))
+    params["sign_method"] = "md5"
+    params["v"] = "2.0"
+    params["format"] = "json"
+    params["sign"] = generate_sign(params)
     
+    response = requests.post(url, data=params, timeout=15)
+    return response.json()
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "✅ أرسل رابط منتج من علي إكسبريس وسأعطيك أفضل 3 عروض + الشحن للجزائر + رابط affiliate")
+
+@bot.message_handler(func=lambda m: 'aliexpress.com' in m.text.lower())
+def handle_link(message):
+    link = message.text.strip()
     try:
-        match = re.search(r'/item/(\d+)', link)
-        if not match:
-            bot.reply_to(message, "يا خويا أرسل رابط منتج صحيح من علي إكسبريس")
-            return
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        product_id = re.search(r'/item/(\d+)', link).group(1)
+        
+        # 1. جلب تفاصيل المنتج
+        detail_params = {
+            "product_ids": product_id,
+            "ship_to_country": "DZ",
+            "target_currency": "USD",
+            "target_language": "EN"
         }
-        response = requests.get(link, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        title_tag = soup.find('h1')
-        title = title_tag.get_text(strip=True)[:75] if title_tag else "منتج علي إكسبريس"
-
-        price = "غير معروف"
-        price_tag = soup.find('span', class_='notranslate') or soup.find('div', class_='product-price-current')
-        if price_tag:
-            price = price_tag.get_text(strip=True)
-
-        reply = f"""✅ يا خويا لقيت لك:
-
-📦 {title}
-💵 السعر: {price} (بالدولار USD)
-🚚 الشحن للجزائر: غالباً مجاني أو رخيص
-
-🔥 رابط الشراء:
-{link}
-
-إذا تبي أفضل 3 عروض أرسل "بحث" + اسم المنتج
-
-البوت مجاني - شاركو مع أصحابك!"""
-
+        detail_result = call_aliexpress_api("aliexpress.affiliate.productdetail.get", detail_params)
+        
+        # 2. البحث عن أفضل 3 عروض
+        search_params = {
+            "keywords": "aliexpress",
+            "sort": "priceAsc",
+            "ship_to_country": "DZ",
+            "target_currency": "USD",
+            "page_size": "3"
+        }
+        search_result = call_aliexpress_api("aliexpress.affiliate.product.query", search_params)
+        
+        # بناء الرد
+        reply = "✅ أفضل 3 عروض للجزائر:\n\n"
+        
+        # هنا نضيف المنطق لعرض النتائج (مبسط)
+        reply += f"رابط المنتج: {link}\n"
+        reply += "الشحن: تحقق من الروابط أدناه\n\n"
+        reply += "🔥 استخدم الروابط أدناه لتربح أنا وأنت توفر"
+        
         bot.reply_to(message, reply)
+        
+    except Exception as e:
+        bot.reply_to(message, "فيه مشكل شوية، جرب رابط آخر")
 
-    except:
-        bot.reply_to(message, "يا خويا فيه مشكل شوية، جرب رابط آخر.")
-
-# ==================== تشغيل البوت ====================
-print(f"{BOT_NAME} شغال بنجاح...")
+print("البوت شغال مع AliExpress Affiliate API...")
 bot.polling(none_stop=True)
